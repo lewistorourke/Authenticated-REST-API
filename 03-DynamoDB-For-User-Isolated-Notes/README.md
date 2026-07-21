@@ -48,7 +48,7 @@ On-Demand capacity was selected because the application is expected to experienc
 
 ### Screenshot – Notes Table Created
 
-![Notes Table Created](screenshots/01-table-created.png)
+![Notes Table Created](screenshots/01-notes-table-created.png)
 
 The screenshot above shows the completed DynamoDB table using a composite primary key consisting of **userid** and **noteid**.
 
@@ -120,7 +120,7 @@ User A was given two notes, while User B was given one.
 
 ### Screenshot – Sample Data
 
-![Sample Data](screenshots/02-test-data.png)
+![Sample Data](screenshots/02-sample-test-data.png)
 
 This simple dataset provides an effective way of verifying that queries only return data belonging to the specified partition key.
 
