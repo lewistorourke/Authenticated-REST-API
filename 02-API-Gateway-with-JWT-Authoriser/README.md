@@ -1,13 +1,12 @@
-
-# Component 2: API Gateway with a JWT Authorizer
+# Component 2: API Gateway with JWT Authorizers
 
 ## Overview
 
-The goal of this component was to introduce authentication into the application using **Amazon Cognito** and **API Gateway JWT Authorizers**.
+The goal of this component was to secure the Notes API by introducing authentication using **Amazon Cognito** and **API Gateway JWT Authorizers**.
 
-Unlike the previous project, where every request could invoke a Lambda function, this component ensures that only authenticated users can access protected API endpoints. Authentication is performed by API Gateway before a request ever reaches Lambda, allowing invalid requests to be rejected immediately while passing verified user information to downstream services.
+In Component 1, Amazon Cognito was configured to authenticate users and issue signed JSON Web Tokens (JWTs). Building on that foundation, this component focuses on protecting an API endpoint so that only authenticated users can access it.
 
-Rather than building CRUD functionality immediately, this component focuses solely on proving that the authentication flow works correctly in isolation before adding any application logic.
+Rather than implementing note creation or retrieval immediately, the objective was first to verify that the authentication flow worked correctly from end to end. This involved creating a Lambda function capable of identifying the authenticated user, exposing it through API Gateway, and configuring a JWT Authorizer to validate incoming access tokens before any request reached the backend.
 
 ---
 
@@ -43,13 +42,13 @@ Authorization: Bearer <JWT>
 
 # Objectives
 
-The objectives of this component were to:
+By the end of this component the application should be able to:
 
-- Configure Amazon Cognito to issue JWT access tokens.
 - Create a Lambda function capable of identifying the authenticated user.
-- Protect an API Gateway endpoint using a JWT Authorizer.
-- Prevent unauthenticated requests from reaching the backend.
-- Demonstrate how API Gateway passes verified JWT claims directly to Lambda.
+- Expose the Lambda function through an HTTP API.
+- Protect the API using a JWT Authorizer.
+- Reject unauthenticated requests before they reach the backend.
+- Pass verified JWT claims directly into the Lambda function.
 
 ---
 
@@ -57,37 +56,41 @@ The objectives of this component were to:
 
 | Service | Purpose |
 |----------|---------|
-| Amazon Cognito | User authentication and JWT token generation |
-| Amazon API Gateway | Secure HTTP API |
-| JWT Authorizer | Validates Cognito-issued access tokens |
+| Amazon Cognito | User authentication and JWT generation |
+| Amazon API Gateway | HTTP API endpoint |
+| JWT Authorizer | Validates Cognito-issued JWTs |
 | AWS Lambda | Reads authenticated user claims |
-| AWS CloudShell | Authentication testing |
-| jwt.io | JWT decoding and inspection |
+| AWS CloudShell | CLI authentication and API testing |
+| jwt.io | JWT inspection and verification |
 
 ---
 
 # Step 1 – Creating the Authentication Lambda
 
-The first step was creating a Lambda function that simply identifies the authenticated user.
+The first task was creating a Lambda function named **`whoamiHandler`**.
 
-This Lambda intentionally contains **no business logic**. It doesn't interact with DynamoDB, S3 or any other AWS service.
+Rather than implementing business logic, this function serves a single purpose: returning the authenticated user's unique Cognito identifier (`sub`) after a JWT has been successfully validated by API Gateway.
 
-Instead, its only responsibility is reading the authenticated user's identity after API Gateway has successfully validated the incoming JWT.
+This simple approach makes it easy to verify that authentication is functioning correctly before introducing more complex functionality such as DynamoDB integration.
 
-The function was created with the following configuration:
+The function was created using the following configuration:
 
-- **Function name:** `whoamiHandler`
 - **Runtime:** Python 3.13
 - **Architecture:** arm64
-- **Execution Role:** Default Lambda execution role (CloudWatch logging permissions only)
+- **Execution Role:** Default Lambda execution role
+- **Function Name:** `whoamiHandler`
 
-The default Lambda template was then replaced with the following code:
+The default Lambda template was replaced with the following code:
 
 ```python
 import json
 
 def lambda_handler(event, context):
-    claims = event.get('requestContext', {}).get('authorizer', {}).get('jwt', {}).get('claims', {})
+    claims = event.get('requestContext', {}) \
+                  .get('authorizer', {}) \
+                  .get('jwt', {}) \
+                  .get('claims', {})
+
     user_id = claims.get('sub', 'unknown')
 
     return {
@@ -101,46 +104,42 @@ def lambda_handler(event, context):
 
 ---
 
-## Understanding the Lambda Code
+## Understanding the Lambda Function
 
-Although this Lambda appears very simple, there is an important design decision behind it.
+One of the key design decisions in this component was **not** to validate JWTs inside the Lambda function.
 
-The function **does not perform any JWT validation itself**.
-
-It does **not**:
-
-- Verify the JWT signature.
-- Check whether the token has expired.
-- Validate the issuer.
-- Validate the audience.
-- Parse the token manually.
-
-Instead, it simply reads:
+Instead, the function simply reads the claims already verified by API Gateway:
 
 ```python
 event.requestContext.authorizer.jwt.claims
 ```
 
-This object is automatically populated by **API Gateway** after it has successfully verified the incoming JWT.
+This means the Lambda function does **not** perform:
 
-By the time the Lambda function executes, the authentication process has already completed.
+- JWT signature verification
+- Expiration checks
+- Issuer validation
+- Audience validation
 
-This provides several advantages:
+Those responsibilities are delegated entirely to API Gateway, allowing each Lambda function to remain focused solely on application logic.
 
-- JWT verification is performed once, centrally, by API Gateway.
-- Every downstream Lambda receives trusted identity information.
-- Individual Lambda functions remain simple and focused on business logic.
-- Authentication logic is not duplicated across every function.
-
-This separation of responsibilities is one of the primary reasons JWT Authorizers are preferred over implementing token validation inside every Lambda.
+This separation of responsibilities follows AWS best practices for building secure serverless applications.
 
 ---
 
-## Testing the Lambda
+# Testing the Lambda
 
-Before introducing API Gateway, the function was tested using Lambda's built-in **Test Event** feature.
+Before introducing API Gateway, the function was tested directly within the Lambda console.
 
-The function returned the following response:
+Because Lambda test events bypass API Gateway completely, no JWT claims are included within the event payload.
+
+As expected, the function successfully executed and returned the fallback value of `"unknown"` for the user identifier.
+
+### Screenshot – Lambda Console Test
+
+![Lambda Console Test](screenshots/01-lambda-test.png)
+
+The execution result confirms that the function completed successfully and returned:
 
 ```json
 {
@@ -149,40 +148,20 @@ The function returned the following response:
 }
 ```
 
-### Screenshot
+This behaviour is expected because the Lambda function has not yet received any authenticated JWT claims.
 
-![Lambda Console Test](screenshots/01-lambda-test.png)
-
-At first glance this may appear incorrect because the returned user ID is `"unknown"`.
-
-However, this is actually the expected behaviour.
-
-The Lambda console test sends a simple JSON payload directly to the function and completely bypasses API Gateway.
-
-Because API Gateway is never involved, the event contains no authenticated JWT claims.
-
-As a result, this line of code:
-
-```python
-user_id = claims.get("sub", "unknown")
-```
-
-falls back to the default value of `"unknown"`.
-
-Rather than indicating a problem, this confirms that the fallback logic behaves correctly when no authenticated identity exists.
-
-The real verification would come later once API Gateway was introduced and responsible for validating JWTs before invoking the Lambda function.
+Once API Gateway and the JWT Authorizer are introduced later in this component, the `"unknown"` value will be replaced with the authenticated user's Cognito `sub` claim.
 
 ---
 
-## What Was Achieved
+# What Was Achieved
 
 At the end of this stage:
 
-- A dedicated authentication Lambda had been created.
-- The Lambda successfully handled requests without crashing.
-- The function correctly returned a default value when no JWT claims were present.
-- The code was ready to be integrated with API Gateway and a JWT Authorizer in the next stage of the project.
+- A dedicated authentication Lambda function was created.
+- The function successfully executed within the Lambda console.
+- The fallback logic correctly handled requests without JWT claims.
+- The function was ready to be integrated with Amazon API Gateway and a JWT Authorizer.
 
 ---
 
@@ -190,199 +169,153 @@ At the end of this stage:
 
 - AWS Lambda
 - Python
-- HTTP APIs
+- JSON Processing
 - JWT Claims
-- Authentication Flow
-- API Gateway Integration
-- Secure Serverless Design
+- Serverless Architecture
+- Authentication Design
 - CloudWatch Logging
 
 # Step 2 – Creating the HTTP API
 
-With the Lambda function complete, the next step was exposing it through **Amazon API Gateway**.
+With the authentication Lambda successfully tested, the next step was to expose it through **Amazon API Gateway**.
 
-The purpose of this API was not to implement application functionality yet, but rather to create a secure endpoint that could later be protected using JWT authentication.
+An **HTTP API** was chosen over a REST API because it provides a simpler, lower-cost solution while still supporting JWT Authorizers. Since this project only required a secure endpoint that could validate authentication tokens, an HTTP API was the most appropriate choice.
 
-A new **HTTP API** was created with the following configuration:
+A new API named **`notes-api`** was created with a single route:
 
-- **API Name:** `notes-api`
-- **Protocol:** HTTP API
-- **Integration:** `whoamiHandler`
 - **Route:** `GET /whoami`
+- **Integration:** `whoamiHandler`
 
-Unlike REST APIs, HTTP APIs are designed to be simpler, lower latency and significantly cheaper while still supporting JWT Authorizers. Since this project only required standard HTTP routing and authentication, an HTTP API was the most appropriate choice.
+At this stage, the endpoint was publicly accessible and had not yet been secured with authentication.
 
-### Screenshot
+### Screenshot – HTTP API Created
 
-![HTTP API Created](screenshots/03-api-created.png)
+![HTTP API Created](screenshots/02-http-api.png)
+
+The screenshot above shows the newly created HTTP API with the `/whoami` route configured. Creating this endpoint first allowed the API to be tested before introducing authentication.
 
 ---
 
-## Why a `/whoami` Endpoint?
+## Why Create a `/whoami` Endpoint?
 
-Rather than immediately building notes functionality, a simple endpoint was created that returned the authenticated user's identity.
+Rather than immediately implementing CRUD operations for notes, a simple endpoint was created that returns the authenticated user's identity.
 
-This keeps the component focused on testing authentication rather than application logic.
+This provides a straightforward way to verify that authentication is functioning correctly.
 
-If authentication failed, the request should never reach the Lambda.
+The expected behaviour would eventually become:
 
-If authentication succeeded, Lambda would simply return the authenticated user's unique identifier.
+- Requests without a valid JWT should be rejected by API Gateway.
+- Requests with a valid JWT should invoke the Lambda function.
+- The Lambda should return the authenticated user's Cognito `sub` claim.
 
-This made it very easy to prove that authentication was functioning correctly before adding any CRUD operations.
+Once this behaviour was verified, the same authentication architecture could then be reused for future endpoints such as creating, retrieving, updating and deleting notes.
 
 ---
 
 # Step 3 – Configuring the JWT Authorizer
 
-Once the API had been created, the next task was protecting the `/whoami` endpoint using an API Gateway **JWT Authorizer**.
+With the API created, the next step was securing the `/whoami` endpoint using a **JWT Authorizer**.
 
-This is an important distinction worth understanding.
+Unlike REST APIs, HTTP APIs do not provide a dedicated "Cognito Authorizer". Instead, they use a standards-based **JWT Authorizer**, which validates JSON Web Tokens issued by any OpenID Connect (OIDC) compatible identity provider.
 
-REST APIs provide a dedicated **Cognito User Pool Authorizer**, whereas HTTP APIs instead use a generic **JWT Authorizer**.
+Since Amazon Cognito issues standards-compliant JWTs, it integrates seamlessly with API Gateway's JWT Authorizer.
 
-Although it isn't labelled as a Cognito authorizer, it works perfectly with Cognito because Cognito issues standards-compliant OpenID Connect (OIDC) JSON Web Tokens.
-
-Rather than selecting "Amazon Cognito" from a list, API Gateway validates JWTs using two pieces of information:
-
-- Issuer
-- Audience
-
----
-
-## Creating the JWT Authorizer
-
-Within API Gateway:
-
-**Authorization → Create and Attach an Authorizer → JWT**
-
-The following values were configured:
+The authorizer was configured using the following settings:
 
 | Setting | Value |
-|---------|------|
+|---------|-------|
 | Authorizer Type | JWT |
 | Name | `who-am-I-authoriser` |
 | Identity Source | `$request.header.Authorization` |
-| Issuer URL | `<Cognito User Pool Issuer URL>` |
-| Audience | `<App Client ID>` |
+| Issuer URL | `<Redacted>` |
+| Audience | `<Redacted>` |
 
-> **Note:** The Issuer URL and Audience values have been redacted from this repository. These values identify the Cognito User Pool and App Client used during development.
+> **Note:** The Issuer URL and Audience have been redacted from this repository because they uniquely identify the Cognito User Pool and App Client used during development.
 
-### Screenshot
+### Screenshot – JWT Authorizer Configuration
 
-![JWT Authorizer Configuration](screenshots/04-jwt-authorizer.png)
+![JWT Authorizer Configuration](screenshots/03-jwt-authorizer.png)
 
----
-
-## Understanding the Issuer
-
-The **Issuer URL** tells API Gateway which identity provider issued the JWT.
-
-Every Cognito-issued JWT contains an `iss` (issuer) claim.
-
-When API Gateway receives an incoming token, it compares the token's `iss` claim against the configured Issuer URL.
-
-If these values do not match, authentication immediately fails.
-
-Earlier in this project, the JWT was decoded using **jwt.io**, where this issuer claim could already be seen inside the decoded payload.
-
-Rather than manually typing the Issuer URL, it was copied directly from the decoded JWT to eliminate the possibility of configuration errors.
+The screenshot above shows the completed JWT Authorizer configuration. API Gateway will use these settings to verify every incoming access token before forwarding requests to the backend.
 
 ---
 
-## Understanding the Audience
+## Understanding the JWT Authorizer
 
-The **Audience** identifies which application the token was originally issued for.
+The JWT Authorizer is responsible for validating every access token presented to the API.
 
-Every JWT issued by Cognito also contains an audience/client identifier.
+Rather than simply checking that a token exists, API Gateway performs several security checks before allowing the request to continue.
 
-API Gateway verifies that the token was issued specifically for this application before allowing the request through.
+These include:
 
-This prevents a token generated for one application from being accepted by another.
+- Verifying the JWT signature.
+- Confirming the token has not expired.
+- Validating that the token was issued by the configured Cognito User Pool (Issuer).
+- Confirming the token was generated for the correct application (Audience).
 
-For security reasons, the App Client ID has been redacted from this repository.
+If any of these checks fail, API Gateway immediately returns an **HTTP 401 Unauthorized** response and the Lambda function is never invoked.
+
+By performing authentication at the API Gateway layer, every downstream Lambda function can trust the identity information it receives without implementing its own JWT validation logic.
 
 ---
 
-## Why Authentication Happens in API Gateway
+## Attaching the JWT Authorizer to the API Route
 
-One of the biggest architectural decisions in this project is where authentication takes place.
+Once the authorizer had been created, it was attached to the existing **`GET /whoami`** route.
 
-Many beginners validate JWTs inside every Lambda function.
+From this point onwards, every request made to the endpoint would first pass through the JWT Authorizer before reaching the Lambda function.
 
-While this works, it introduces duplicated code, repeated cryptographic verification and unnecessary complexity.
+Only requests containing a valid Cognito-issued Access Token within the `Authorization` header would be allowed to continue.
 
-Instead, authentication is delegated entirely to API Gateway.
+### Screenshot – JWT Authorizer Attached to Route
 
-The request lifecycle therefore becomes:
+![JWT Authorizer Attached](screenshots/04-authorizer-route.png)
+
+The screenshot above confirms that the `GET /whoami` route is now protected using the **who-am-I-authoriser** JWT Authorizer.
+
+This means authentication is now enforced centrally by API Gateway, preventing unauthenticated requests from reaching the backend.
+
+---
+
+## Request Flow
+
+After attaching the JWT Authorizer, every request follows the authentication flow shown below.
 
 ```text
-Client Request
-      │
-      ▼
-API Gateway JWT Authorizer
-      │
-Validates:
- • Signature
- • Expiry
- • Issuer
- • Audience
-      │
-      ▼
-Valid Request?
-      │
- ┌────┴─────┐
- │          │
-No         Yes
- │          │
-401     Invoke Lambda
-            │
-            ▼
-Lambda reads trusted claims
+                Client Request
+                     │
+                     ▼
+          API Gateway HTTP API
+                     │
+             JWT Authorizer
+                     │
+     ┌───────────────┴───────────────┐
+     │                               │
+ Invalid or Missing JWT         Valid JWT
+     │                               │
+HTTP 401 Unauthorized          Invoke Lambda
+                                     │
+                                     ▼
+                            Read JWT Claims
+                                     │
+                                     ▼
+                         Return Authenticated User
 ```
 
-This provides several advantages:
-
-- JWT verification occurs only once.
-- Every Lambda receives trusted claims.
-- Individual Lambda functions remain much smaller.
-- Business logic remains completely separate from authentication.
-- Invalid requests never consume Lambda execution time.
-
-This is considered a best practice when building serverless APIs.
+This architecture keeps authentication separate from business logic and ensures that invalid requests are rejected before consuming Lambda execution time.
 
 ---
 
-## Attaching the Authorizer
-
-Once the authorizer had been created, it was attached to the existing `GET /whoami` route.
-
-From this point onwards, API Gateway would no longer allow anonymous requests to reach the backend.
-
-Instead, every request must now include a valid Cognito-issued JWT inside the following HTTP header:
-
-```http
-Authorization: Bearer <Access Token>
-```
-
-Requests without a valid token would automatically receive an HTTP **401 Unauthorized** response before the Lambda function executed.
-
-### Screenshot
-
-![JWT Authorizer Attached](screenshots/05-authorizer-attached.png)
-
----
-
-## What Was Achieved
+# What Was Achieved
 
 At the end of this stage:
 
-- A new HTTP API had been created.
-- The `/whoami` endpoint was exposed publicly.
-- A JWT Authorizer was configured against Amazon Cognito.
-- Authentication was moved entirely into API Gateway.
-- Anonymous requests would now be blocked automatically before reaching Lambda.
-
-The next step was generating a real Cognito access token and testing the protected endpoint from CloudShell.
+- An HTTP API was created using Amazon API Gateway.
+- The `/whoami` endpoint was configured and integrated with the Lambda function.
+- A JWT Authorizer was created using Amazon Cognito.
+- Authentication was enforced at the API Gateway layer.
+- The `/whoami` route was successfully protected using the JWT Authorizer.
+- The API was now ready to be tested using valid and invalid Cognito Access Tokens.
 
 ---
 
@@ -390,206 +323,83 @@ The next step was generating a real Cognito access token and testing the protect
 
 - Amazon API Gateway
 - HTTP APIs
+- Amazon Cognito
 - JWT Authorizers
-- Amazon Cognito Integration
 - OpenID Connect (OIDC)
+- API Security
+- Serverless Authentication
 - Secure API Design
-- Authentication Architecture
-- Serverless Security Best Practices
 
-# Step 4 – Testing the Protected API
+# Step 4 – Authenticating with Amazon Cognito
 
-With the JWT Authorizer attached, the next stage was verifying that authentication behaved exactly as expected.
+With the API now protected by a JWT Authorizer, the next stage was verifying that only authenticated users could access the `/whoami` endpoint.
 
-Rather than relying on the Lambda console, the API was tested externally using **AWS CloudShell** and `curl`.
+To achieve this, an Access Token first needed to be obtained from Amazon Cognito. This token would then be included in the HTTP `Authorization` header when sending requests to the API.
 
-The objective was to prove two scenarios:
+Authentication was performed using the AWS CLI from **AWS CloudShell**.
 
-- Unauthenticated requests are rejected before reaching Lambda.
-- Authenticated requests successfully reach Lambda with verified JWT claims.
-
----
-
-## Obtaining an Access Token
-
-Before the protected endpoint could be tested, an Access Token needed to be generated by Amazon Cognito.
-
-Authentication was performed through the AWS CLI.
-
-Because the test user had previously completed the **NEW_PASSWORD_REQUIRED** challenge during Component 1, authentication now returned a valid `AuthenticationResult` immediately.
-
-For security reasons, the following values have been replaced with placeholders:
-
-- App Client ID
-- Email Address
-- Password
+The following command initiates the authentication process using the **USER_PASSWORD_AUTH** flow.
 
 ```bash
 aws cognito-idp initiate-auth \
   --auth-flow USER_PASSWORD_AUTH \
   --client-id <app-client-id> \
-  --auth-parameters '{
-    "USERNAME":"<email-address>",
-    "PASSWORD":"<password>"
-}'
+  --auth-parameters \
+USERNAME=<email-address>,PASSWORD=<password>
 ```
 
-A successful authentication returned:
+> **Note:** The App Client ID, email address and password have been replaced with placeholders for security reasons.
 
-- Access Token
-- Refresh Token
-- Token Type
-- Expiration Time
+If the supplied credentials are valid, Amazon Cognito returns an authentication response containing several tokens.
 
-The Access Token would later be supplied to API Gateway using the HTTP Authorization header.
+These include:
+
+- **Access Token** – Used to authenticate API requests.
+- **ID Token** – Contains information about the authenticated user.
+- **Refresh Token** – Used to obtain new Access and ID tokens without requiring the user to log in again.
+
+For this component, only the **Access Token** was required.
 
 ---
 
-# Initial Authentication Tests
+# Extracting the Access Token
 
-Before testing a valid JWT, the protected endpoint was deliberately accessed without any authentication.
-
-```bash
-curl -i https://<api-endpoint>/whoami
-```
-
-The response returned:
-
-```text
-HTTP/2 401 Unauthorized
-```
-
-This was the expected behaviour.
-
-The request never reached the Lambda function because API Gateway rejected it during authentication.
-
-This demonstrated that the JWT Authorizer was correctly protecting the endpoint.
-
----
-
-# Troubleshooting Authentication
-
-Although the API was configured correctly, several authentication problems were encountered during testing.
-
-Each failure helped confirm a different part of the authentication process.
-
----
-
-## Smart Quotes Introduced During Copy & Paste
-
-The first issue occurred when copying commands into CloudShell.
-
-Some quotation marks had been converted into typographic ("smart") quotes by the browser, causing Bash to interpret the command incorrectly.
-
-This was resolved by manually typing the command structure and only pasting the token value.
-
----
-
-## Missing Bearer Prefix
-
-A later request supplied only the Access Token itself:
-
-```text
-<JWT Token>
-```
-
-instead of:
-
-```text
-Authorization: Bearer <JWT Token>
-```
-
-API Gateway therefore ignored the token entirely because it only inspects the Authorization header when it follows the standard Bearer authentication format.
-
----
-
-## Truncated JWT
-
-The most significant issue occurred while manually copying the Access Token.
-
-JWTs are long Base64URL encoded strings containing three sections separated by periods:
-
-```text
-header.payload.signature
-```
-
-Manually selecting the token from the terminal repeatedly resulted in the beginning of the token being truncated.
-
-Every valid JWT begins with something similar to:
-
-```text
-eyJ...
-```
-
-When the beginning of the token was accidentally omitted, API Gateway responded with:
-
-```text
-HTTP/2 401 Unauthorized
-
-{
-  "error": "invalid_token",
-  "error_description": "token contains an invalid number of segments"
-}
-```
-
-This confirmed that API Gateway had attempted to parse the JWT but rejected it because it no longer contained the expected three-part structure.
-
----
-
-# Eliminating Manual Copy & Paste
-
-Rather than continuing to copy long JWTs manually, the authentication process was improved by allowing Bash to extract the Access Token automatically.
-
-The authentication response was first captured into a shell variable.
+Rather than manually copying the Access Token from the CLI output, the authentication response was stored in a shell variable and parsed using **jq**.
 
 ```bash
 RESPONSE=$(aws cognito-idp initiate-auth \
   --auth-flow USER_PASSWORD_AUTH \
   --client-id <app-client-id> \
-  --auth-parameters '{
-    "USERNAME":"<email-address>",
-    "PASSWORD":"<password>"
-}')
+  --auth-parameters \
+USERNAME=<email-address>,PASSWORD=<password>)
 ```
 
-The Access Token was then extracted using `jq`.
+The Access Token was then extracted using:
 
 ```bash
 ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.AuthenticationResult.AccessToken')
 ```
 
-Finally, two quick validation checks confirmed that the token had been extracted correctly.
-
-```bash
-echo "Starts with: ${ACCESS_TOKEN:0:10}"
-echo "Length: ${#ACCESS_TOKEN}"
-```
-
-The output confirmed:
-
-- the token began with the expected JWT prefix
-- the token length matched a complete Cognito Access Token
-
-By extracting the token programmatically, manual copy-and-paste errors were eliminated completely.
+Automating this process helped prevent mistakes when copying long JWT strings manually and made subsequent API testing significantly easier.
 
 ---
 
-# Successful Authentication
+# Testing the Protected Endpoint
 
-The protected endpoint was then called using the automatically extracted token.
+With a valid Access Token available, the `/whoami` endpoint could now be tested.
+
+Requests were sent using **curl**, with the Access Token included within the `Authorization` header using the standard Bearer token format.
 
 ```bash
-curl -i https://<api-endpoint>/whoami \
+curl https://<api-endpoint>/whoami \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-API Gateway returned:
+Because the request contained a valid Cognito-issued Access Token, API Gateway successfully authenticated the request before invoking the Lambda function.
 
-```http
-HTTP/2 200 OK
-```
+The Lambda function then read the authenticated user's claims from the request context and returned the user's unique Cognito identifier (`sub`).
 
-with the response:
+A successful response resembled the following:
 
 ```json
 {
@@ -598,17 +408,19 @@ with the response:
 }
 ```
 
-### Screenshot
-
-![Successful Authorized Request](screenshots/06-authorized-request.png)
+This confirmed that the complete authentication flow was functioning correctly.
 
 ---
 
-# Verifying the User Identity
+# Understanding the Authentication Flow
 
-The returned `userId` matched the `sub` claim that had previously been decoded from the Cognito Access Token during Component 1.
+One of the key objectives of this component was understanding **where authentication actually occurs**.
 
-This proved the complete authentication chain was functioning correctly.
+Although the Lambda function returns the authenticated user's identity, it never validates the JWT itself.
+
+Instead, authentication is performed entirely by API Gateway.
+
+The complete request flow is shown below.
 
 ```text
 Amazon Cognito
@@ -616,32 +428,70 @@ Amazon Cognito
  Issues signed JWT
         │
         ▼
+Client sends request
+Authorization: Bearer <JWT>
+        │
+        ▼
 API Gateway JWT Authorizer
         │
- Validates:
- • Signature
- • Expiry
- • Issuer
- • Audience
+Verifies:
+• Signature
+• Expiration
+• Issuer
+• Audience
         │
         ▼
-Injects verified claims
+Authentication Successful
         │
         ▼
-Lambda
+Invoke Lambda
         │
 Reads:
-event.requestContext.authorizer.jwt.claims.sub
+event.requestContext.authorizer.jwt.claims
         │
         ▼
-Returns authenticated user ID
+Return Authenticated User
 ```
 
-Most importantly, the Lambda function never performed any JWT validation itself.
+This separation of responsibilities simplifies the Lambda function considerably.
 
-Instead, it trusted the identity already verified by API Gateway.
+Rather than implementing authentication logic within every backend function, API Gateway performs validation once and forwards only trusted identity information.
 
-This keeps authentication centralised and prevents duplicated verification logic across multiple Lambda functions.
+---
+
+# Troubleshooting
+
+During testing, several authentication issues were encountered before the API was working correctly.
+
+### Lambda Test Events
+
+Initially, the Lambda function always returned:
+
+```json
+"userId": "unknown"
+```
+
+This behaviour was expected because Lambda console test events bypass API Gateway entirely and therefore contain no authenticated JWT claims.
+
+---
+
+### Invalid JWT Tokens
+
+Several requests returned **HTTP 401 Unauthorized** responses.
+
+After investigation, these failures were traced back to malformed JWTs that had been accidentally truncated while copying them from the terminal.
+
+To eliminate this issue, the Access Token was extracted automatically using **jq**, removing the need to manually copy long JWT strings.
+
+---
+
+### JWT Authorizer Configuration
+
+Another important verification step was confirming that the JWT Authorizer had been attached to the correct route.
+
+Without the authorizer attached, API Gateway would allow unauthenticated requests to reach the backend.
+
+Once attached correctly, API Gateway automatically rejected requests that did not contain a valid Cognito-issued Access Token.
 
 ---
 
@@ -649,259 +499,238 @@ This keeps authentication centralised and prevents duplicated verification logic
 
 At the end of this stage:
 
-- Cognito successfully authenticated the user.
-- API Gateway rejected anonymous requests.
-- API Gateway rejected malformed JWTs.
-- API Gateway successfully validated a genuine Cognito Access Token.
-- Verified JWT claims were automatically passed into Lambda.
-- Lambda successfully returned the authenticated user's unique Cognito `sub` identifier.
+- Successfully authenticated with Amazon Cognito using the AWS CLI.
+- Generated a valid JWT Access Token.
+- Used the Access Token to authenticate requests to the API.
+- Verified that API Gateway correctly validated incoming JWTs.
+- Confirmed that authenticated user claims were automatically passed to the Lambda function.
+- Demonstrated the complete authentication flow from Cognito to API Gateway to Lambda.
 
-This completed the authentication flow and demonstrated that secure identity could now be passed into future CRUD operations without requiring Lambda to perform any manual JWT verification.
+The API was now fully protected and ready to support authenticated CRUD operations in the next stage of the project.
 
 ---
 
 ## Skills Demonstrated
 
-- Amazon Cognito Authentication
+- Amazon Cognito
 - AWS CLI
 - CloudShell
-- JWT Tokens
+- JWT Authentication
+- API Testing
 - HTTP Authorization Headers
-- API Gateway JWT Authorizers
-- Secure API Testing
 - Bash
 - jq
 - Authentication Troubleshooting
-- Serverless Authentication Architecture
+- Secure Serverless Architecture
 
 # Verification
 
-The authentication flow was tested end-to-end to ensure each component behaved as expected.
+The completed implementation was tested to ensure that each stage of the authentication process behaved as expected.
 
 | Test | Expected Result | Outcome |
 |------|-----------------|---------|
-| Invoke Lambda directly | Returns `"userId": "unknown"` | ✅ Passed |
-| Call API without JWT | HTTP 401 Unauthorized | ✅ Passed |
-| Call API with malformed JWT | HTTP 401 Unauthorized | ✅ Passed |
-| Call API with valid Cognito Access Token | HTTP 200 OK | ✅ Passed |
-| Retrieve authenticated user's `sub` claim | Returned successfully | ✅ Passed |
+| Invoke the Lambda function directly | Returns `"userId": "unknown"` because no JWT claims are present | ✅ Passed |
+| Create an HTTP API and integrate the Lambda | API successfully exposes the `/whoami` endpoint | ✅ Passed |
+| Configure a JWT Authorizer | API Gateway validates Cognito-issued JWTs | ✅ Passed |
+| Attach the JWT Authorizer to the route | Requests now require authentication | ✅ Passed |
+| Authenticate using Amazon Cognito | Valid Access Token successfully generated | ✅ Passed |
+| Call the API with a valid Access Token | Lambda returns the authenticated user's Cognito `sub` claim | ✅ Passed |
 
-These tests confirmed that API Gateway correctly validated incoming JWTs before invoking the Lambda function and only forwarded requests containing valid Cognito-issued access tokens.
+These tests confirmed that authentication was functioning correctly throughout the entire request lifecycle.
 
 ---
 
 # Security Considerations
 
-Several security best practices were followed throughout this component.
+This component was designed around AWS security best practices by separating authentication from application logic.
 
-### JWT Validation
+## Authentication at the API Gateway Layer
 
-JWT validation was delegated entirely to API Gateway rather than being implemented inside the Lambda function.
+Instead of validating JWTs within every Lambda function, authentication is delegated entirely to API Gateway.
 
-This ensures that:
+Before forwarding a request, the JWT Authorizer verifies:
 
-- JWT signatures are cryptographically verified.
-- Expired tokens are rejected automatically.
-- Tokens issued by another identity provider cannot be used.
-- Tokens intended for another application are rejected.
+- The JWT signature.
+- The token has not expired.
+- The token was issued by the configured Amazon Cognito User Pool.
+- The token was issued for the correct App Client (Audience).
 
-Only authenticated requests are forwarded to Lambda.
+Only requests containing valid Access Tokens are forwarded to the backend.
 
----
-
-### Principle of Least Privilege
-
-The Lambda execution role only requires basic CloudWatch logging permissions.
-
-No unnecessary IAM permissions were granted because the function simply reads authenticated user claims and returns a response.
-
-As future components introduce DynamoDB integration, additional permissions will be added only when required.
+This reduces duplicated authentication code and ensures that every protected endpoint applies the same validation rules.
 
 ---
 
-### Sensitive Information
+## Principle of Least Privilege
 
-To ensure this repository is safe for public viewing, the following information has been removed or replaced with placeholders:
+The Lambda execution role was intentionally kept minimal throughout this component.
+
+Only the permissions required for Lambda execution and CloudWatch logging were granted.
+
+Additional IAM permissions will be introduced in later components only when they are required to interact with other AWS services such as DynamoDB.
+
+---
+
+## Protecting Sensitive Information
+
+To ensure this repository can be shared publicly, sensitive information has been removed or replaced with placeholders.
+
+Examples include:
 
 - Cognito User Pool IDs
 - App Client IDs
-- AWS Account IDs
+- Email addresses
+- Passwords
 - JWT Access Tokens
 - Refresh Tokens
-- Email Addresses
-- Passwords
+- AWS Account IDs
 - API Gateway URLs
-- Session Tokens
-- Request IDs
 
-This allows the project to demonstrate the implementation without exposing sensitive credentials.
+This allows the implementation to be documented without exposing credentials or infrastructure details.
 
 ---
 
 # Key Concepts Learned
 
-This component introduced several important serverless authentication concepts.
+Completing this component reinforced several important concepts surrounding authentication within serverless applications.
 
-### Amazon Cognito
+## Amazon Cognito
 
-Amazon Cognito provides user authentication and securely issues signed JSON Web Tokens (JWTs) after successful login.
+Amazon Cognito provides a managed authentication service capable of securely registering users, authenticating credentials and issuing signed JSON Web Tokens.
 
-Rather than building authentication manually, Cognito handles:
-
-- User registration
-- Password management
-- Secure authentication
-- Token generation
+Using Cognito removes the need to build and maintain custom authentication systems while integrating seamlessly with other AWS services.
 
 ---
 
-### JWT Authorizers
+## JWT Authorizers
 
-HTTP APIs use JWT Authorizers to validate tokens before requests reach backend services.
+API Gateway HTTP APIs use JWT Authorizers to validate authentication tokens before requests reach backend services.
 
-Rather than trusting any JWT, API Gateway verifies:
+Rather than simply checking whether a token exists, the authorizer verifies multiple aspects of the JWT before allowing the request to continue.
 
-- Signature
-- Expiration
-- Issuer
-- Audience
-
-Only requests that successfully pass these checks are allowed to invoke the Lambda function.
+Delegating authentication to API Gateway simplifies backend development and improves consistency across the application.
 
 ---
 
-### Separation of Responsibilities
+## Authentication vs Authorization
 
-One of the biggest architectural lessons from this project is separating authentication from business logic.
+One of the most valuable lessons from this component was understanding the difference between authentication and authorization.
 
-API Gateway is responsible for:
+**Authentication** answers the question:
 
-- Authentication
-- Token validation
-- Identity verification
+> *Who is the user?*
 
-Lambda is responsible for:
+Amazon Cognito authenticates the user and issues a signed JWT.
 
-- Application logic
-- Reading authenticated claims
-- Returning responses
+**Authorization** answers the question:
 
-Keeping these responsibilities separate makes applications easier to maintain and reduces duplicated authentication code.
+> *Is this request allowed to access this resource?*
+
+API Gateway authorizes requests by validating the JWT before allowing access to the protected endpoint.
+
+Future components will build upon this by ensuring users are only authorised to access their own notes stored within DynamoDB.
 
 ---
 
-### JWT Claims
+## JWT Claims
 
-Rather than decoding tokens manually, Lambda simply reads the verified claims injected by API Gateway.
+Once authentication has been completed successfully, API Gateway injects the verified JWT claims into the Lambda event.
 
-For this component, the most important claim was:
+Rather than decoding or verifying tokens manually, the Lambda simply reads:
+
+```python
+event["requestContext"]["authorizer"]["jwt"]["claims"]
+```
+
+For this project, the most important claim is:
 
 ```text
 sub
 ```
 
-The `sub` (Subject) claim uniquely identifies each authenticated Cognito user.
+The `sub` claim uniquely identifies every Cognito user and will later be used as the partition key when storing notes in DynamoDB.
 
-Future components will use this value as the partition key when storing notes in DynamoDB, ensuring each user only accesses their own data.
+This ensures every user can only access their own records.
 
 ---
 
 # Challenges Encountered
 
-Several issues were encountered during development.
+Although the overall implementation was straightforward, several challenges were encountered during development.
 
-### Copy-and-Paste Errors
+## Testing Lambda Directly
 
-Long JWT strings were occasionally truncated when copied manually from CloudShell.
+Initially, it appeared that the Lambda function was not reading authenticated user information because every test returned `"userId": "unknown"`.
 
-This resulted in malformed JWTs that API Gateway correctly rejected.
+This behaviour was expected because Lambda test events bypass API Gateway entirely and therefore contain no authenticated JWT claims.
 
-The issue was resolved by extracting the Access Token programmatically using `jq`.
-
----
-
-### Lambda Console Testing
-
-Initially, the Lambda console always returned:
-
-```json
-"userId": "unknown"
-```
-
-This behaviour was expected because Lambda test events bypass API Gateway entirely and therefore contain no authenticated claims.
-
-Understanding the difference between direct Lambda testing and API Gateway requests was an important learning point.
+Understanding the difference between testing Lambda directly and testing through API Gateway was an important learning point.
 
 ---
 
-### Understanding JWT Authorizers
+## Working with JWTs
 
-Initially it was unclear why HTTP APIs did not include a dedicated Cognito Authorizer option.
+JWTs are long encoded strings and can easily become corrupted when copied manually.
 
-Through experimentation it became clear that HTTP APIs instead implement a generic OpenID Connect (OIDC) JWT Authorizer.
+During testing, malformed tokens resulted in HTTP 401 Unauthorized responses.
 
-Since Amazon Cognito issues standards-compliant JWTs, this provides the same authentication capability while supporting additional identity providers.
+Using the AWS CLI together with `jq` simplified the testing process by extracting the Access Token automatically.
 
 ---
 
-# What Was Achieved
+## Understanding API Gateway Authentication
 
-By the end of this component:
+Initially, it was unclear why HTTP APIs did not include a dedicated Cognito Authorizer like REST APIs.
 
-- Amazon Cognito successfully authenticated users.
-- API Gateway protected the `/whoami` endpoint using a JWT Authorizer.
-- Invalid requests were rejected before reaching Lambda.
-- Valid JWTs successfully invoked the backend.
-- Lambda received verified JWT claims from API Gateway.
-- The authenticated user's unique Cognito identifier (`sub`) was successfully returned.
-- The authentication architecture was fully validated and ready for future application functionality.
+Further investigation showed that HTTP APIs instead implement a generic JWT Authorizer based on the OpenID Connect (OIDC) standard.
 
-This establishes the security foundation that all future API endpoints will build upon.
+Since Amazon Cognito issues standards-compliant JWTs, this approach provides the same functionality while supporting multiple identity providers.
 
 ---
 
 # Skills Demonstrated
 
+Throughout this component, the following AWS services and concepts were implemented:
+
 - Amazon Cognito
 - Amazon API Gateway
-- HTTP APIs
 - JWT Authorizers
-- JSON Web Tokens (JWT)
-- OpenID Connect (OIDC)
+- HTTP APIs
 - AWS Lambda
 - Python
 - AWS CLI
 - CloudShell
-- Bash
-- jq
+- JSON Web Tokens (JWT)
+- OpenID Connect (OIDC)
+- Serverless Authentication
+- IAM
+- CloudWatch Logging
 - Secure API Design
 - Authentication Architecture
-- Serverless Development
-- IAM
-- CloudWatch
 
 ---
 
 # Future Improvements
 
-The next component will build upon this authentication layer by introducing persistent data storage using Amazon DynamoDB.
+With authentication successfully implemented, the next stage of the project will focus on building the application's core functionality.
 
-Planned functionality includes:
+Planned improvements include:
 
-- Creating notes
-- Retrieving notes
-- Updating notes
-- Deleting notes
-- Restricting access so users can only manage their own notes using the authenticated Cognito `sub` identifier
+- Creating notes using Amazon DynamoDB.
+- Retrieving notes belonging to the authenticated user.
+- Updating existing notes.
+- Deleting notes.
+- Restricting data access using the authenticated Cognito `sub` claim.
+- Applying least-privilege IAM permissions for DynamoDB access.
 
-By combining Cognito authentication with DynamoDB access control, the application will evolve from a proof-of-concept authentication service into a fully functional multi-user serverless notes application.
+This will transform the project from an authentication demonstration into a fully functional multi-user serverless notes application.
 
 ---
 
 # Conclusion
 
-This component successfully introduced secure authentication into the application using Amazon Cognito and API Gateway JWT Authorizers.
+This component successfully introduced secure authentication into the Notes API using Amazon Cognito and API Gateway JWT Authorizers.
 
-Rather than implementing JWT validation inside every Lambda function, authentication was delegated to API Gateway, allowing invalid requests to be rejected before consuming compute resources while providing trusted identity information to downstream services.
+Rather than validating JWTs inside every Lambda function, authentication is handled centrally by API Gateway. This ensures that only authenticated requests reach the backend while allowing Lambda functions to remain focused solely on business logic.
 
-The project demonstrates a secure and scalable serverless authentication architecture that follows AWS best practices and provides a solid foundation for future CRUD functionality.
+By completing this stage, a secure authentication foundation has been established that can be reused throughout the remainder of the application as additional features are introduced.
